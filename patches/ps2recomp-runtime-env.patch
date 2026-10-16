@@ -17,6 +17,20 @@ index 4bf8dc5..35d9e74 100644
          case OPCODE_COP2:
              if (m_branchInst.rs == COP2_BC)
              {
+diff --git i/ps2xRuntime/include/ps2_runtime.h w/ps2xRuntime/include/ps2_runtime.h
+index 4b9242c..a6c4e1f 100644
+--- i/ps2xRuntime/include/ps2_runtime.h
++++ w/ps2xRuntime/include/ps2_runtime.h
+@@ -150,6 +150,9 @@ struct alignas(16) R5900Context
+ 
+         // Initialize VU0 registers
+         vu0_q = 1.0f; // Q register usually initialized to 1.0
++        // vf0 é a constante (0,0,0,1) do hardware; todo contexto de thread nasce aqui e jogos usam vf0.w como 1.0
++        // (matrizes homogêneas, w de vértice). Zerado, matrizes e luz feitas no VU0 colapsam.
++        vu0_vf[0] = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);
+ 
+         // Reset COP0 registers
+         cop0_random = 47; // Start at maximum value
 diff --git i/ps2xRuntime/include/runtime/ee_scheduler.h w/ps2xRuntime/include/runtime/ee_scheduler.h
 index f247ff9..e41fe96 100644
 --- i/ps2xRuntime/include/runtime/ee_scheduler.h
