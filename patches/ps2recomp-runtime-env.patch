@@ -103,7 +103,7 @@ index 67c8184..bcda1c1 100644
      float normalizeOperand(float value) const;
      float normalizeResult(float value, uint32_t &laneFlags) const;
 diff --git i/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp w/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..0fad2ab 100644
+index c5e31c4..5b84b37 100644
 --- i/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ w/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -106,6 +106,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
@@ -170,6 +170,23 @@ index c5e31c4..0fad2ab 100644
          return;
      }
      const auto &handlers = dmac ? m_dmacHandlers : m_intcHandlers;
+@@ -1743,6 +1753,16 @@ void EeScheduler::applyPendingPreemption()
+ void EeScheduler::processPendingEvents()
+ {
+     assertExecutor();
++    // Caminho rápido: roda duas vezes por despacho; sem evento postado, IRQ de timer ou prazo vencido em
++    // ciclos não há o que fazer, e o caminho completo custa deque+malloc, dois mutex e leitura de relógio.
++    // postEvent liga m_checkpointPending e scheduleDeadline publica m_nextDeadlineCycle, então nada se perde.
++    const uint64_t nextDeadline = m_nextDeadlineCycle.load(std::memory_order_acquire);
++    if (!m_checkpointPending.load(std::memory_order_acquire) && m_pendingEeTimerInterrupts == 0u &&
++        (nextDeadline == 0u || m_eeCycle < nextDeadline))
++    {
++        applyPendingPreemption();
++        return;
++    }
+     processDueDeadlines();
+     const uint32_t timerInterrupts = m_pendingEeTimerInterrupts;
+     m_pendingEeTimerInterrupts = 0u;
 diff --git i/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp w/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 index 56a978e..b3fc5a3 100644
 --- i/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
@@ -1232,6 +1249,54 @@ index a8f9fa8..47ccc1c 100644
      void WriteCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value)
      {
          PixelStorageTraits<C32>::Write(PageTableC32, data, bp, bw, x, y, value);
+diff --git i/ps2xRuntime/src/lib/ps2_memory.cpp w/ps2xRuntime/src/lib/ps2_memory.cpp
+index 37b6a4d..74b27c5 100644
+--- i/ps2xRuntime/src/lib/ps2_memory.cpp
++++ w/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -10,6 +10,13 @@
+ #include <string>
+ #include <vector>
+ 
++namespace
++{
++    // cache do GIF_STAT usado por advanceEeTimers; invalidado quando m_ioRegisters é limpo
++    const PS2Memory *gifStatOwner = nullptr;
++    uint32_t *gifStat = nullptr;
++}
++
+ namespace
+ {
+     inline void inRange(uint32_t offset, size_t bytes, size_t regionSize, const char *op, uint32_t address)
+@@ -355,6 +362,8 @@ bool PS2Memory::initialize(size_t ramSize)
+ 
+         // Initialize I/O registers
+         m_ioRegisters.clear();
++        gifStatOwner = nullptr;
++        gifStat = nullptr;
+ 
+         // Initialize GS registers
+         memset(&gs_regs, 0, sizeof(gs_regs));
+@@ -413,9 +422,17 @@ uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
+ 
+     constexpr uint32_t kGifStat = 0x10003020u;
+     constexpr uint32_t kGifFqcMask = 0x1F000000u;
+-    auto gifStatIt = m_ioRegisters.find(kGifStat);
+-    if (gifStatIt != m_ioRegisters.end())
+-        gifStatIt->second &= ~kGifFqcMask;
++    // Roda a cada despacho do EE: guarda o endereço do GIF_STAT em vez de buscar no mapa toda vez
++    // (referências a elementos de unordered_map sobrevivem a rehash). Fica no .cpp para não mexer no header,
++    // que os ~26k arquivos gerados incluem.
++    if (gifStatOwner != this)
++    {
++        auto gifStatIt = m_ioRegisters.find(kGifStat);
++        gifStat = gifStatIt != m_ioRegisters.end() ? &gifStatIt->second : nullptr;
++        gifStatOwner = gifStat ? this : nullptr;
++    }
++    if (gifStat)
++        *gifStat &= ~kGifFqcMask;
+ 
+     uint32_t interruptMask = 0u;
+     for (size_t index = 0; index < m_eeTimers.size(); ++index)
 diff --git i/ps2xRuntime/src/lib/ps2_runtime.cpp w/ps2xRuntime/src/lib/ps2_runtime.cpp
 index 45cb9d2..04652d6 100644
 --- i/ps2xRuntime/src/lib/ps2_runtime.cpp
