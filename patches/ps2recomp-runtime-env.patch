@@ -51,6 +51,25 @@ index 2421f9e..e07918a 100644
      std::array<uint32_t, 2> m_clutCbp{};
      GSMem::TexturePageCache m_texturePageCache;
  
+diff --git i/ps2xRuntime/include/runtime/gs/gs_dump.h w/ps2xRuntime/include/runtime/gs/gs_dump.h
+new file mode 100644
+index 0000000..43450ba
+--- /dev/null
++++ w/ps2xRuntime/include/runtime/gs/gs_dump.h
+@@ -0,0 +1,13 @@
++#pragma once
++// PS2X_GSDUMP="vsync_inicial:frames:arquivo.gs": grava tudo que entra no GS no formato de GS dump do
++// PCSX2 (state_version 9), reproduzível pelo tools/gsplay e pelo próprio PCSX2.
++#include <cstdint>
++
++struct GSRegisters;
++
++namespace gsdump
++{
++    // Chamado no início de cada VBlank pelo EeScheduler: abre o dump no VSync pedido, grava os
++    // registradores privilegiados e o marcador de VSync, e fecha depois do número de frames pedido.
++    void onVSync(const GSRegisters &priv, uint64_t tick);
++}
 diff --git i/ps2xRuntime/include/runtime/gs/gs_frontend.h w/ps2xRuntime/include/runtime/gs/gs_frontend.h
 index 4c3f641..8da9836 100644
 --- i/ps2xRuntime/include/runtime/gs/gs_frontend.h
@@ -103,10 +122,15 @@ index 67c8184..bcda1c1 100644
      float normalizeOperand(float value) const;
      float normalizeResult(float value, uint32_t &laneFlags) const;
 diff --git i/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp w/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..d583aee 100644
+index c5e31c4..a5afb75 100644
 --- i/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ w/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-@@ -106,6 +106,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -1,3 +1,4 @@
++#include "runtime/gs/gs_dump.h"
+ #include "runtime/ee_scheduler.h"
+ 
+ #include "ps2_log.h"
+@@ -106,6 +107,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      m_dmacTailOrder = 1000;
      m_enabledIntcMask = 0xFFFFFFFFu;
      m_enabledDmacMask = 0xFFFFFFFFu;
@@ -114,7 +138,7 @@ index c5e31c4..d583aee 100644
      m_currentThreadId = 0;
      m_rescheduleRequested = false;
      m_timeSliceExpired = false;
-@@ -141,11 +142,13 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -141,11 +143,13 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      // returned by ReferThreadStatus. SetupThread records that metadata.
      main.stack = 0u;
      main.gp = getRegU32(&mainContext, 28);
@@ -131,7 +155,7 @@ index c5e31c4..d583aee 100644
      scheduleEvent(m_eeCycle + kVBlankPeriodCycles,
                    std::chrono::steady_clock::now() + kVBlankPeriod,
                    EeEvent{EeEventType::VBlankStart, 0, 0});
-@@ -423,7 +426,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
+@@ -423,7 +427,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
  int EeScheduler::createThread(const EeThreadCreateParams &params)
  {
      assertExecutor();
@@ -140,7 +164,7 @@ index c5e31c4..d583aee 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -701,7 +704,7 @@ int EeScheduler::cancelWakeup(int id)
+@@ -701,7 +705,7 @@ int EeScheduler::cancelWakeup(int id)
  int EeScheduler::changePriority(int id, int priority, bool interruptSafe, int &oldPriority)
  {
      assertExecutor();
@@ -149,7 +173,7 @@ index c5e31c4..d583aee 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -1243,6 +1246,11 @@ int EeScheduler::setIrqCauseEnabled(bool dmac, uint32_t cause, bool enabled)
+@@ -1243,6 +1247,11 @@ int EeScheduler::setIrqCauseEnabled(bool dmac, uint32_t cause, bool enabled)
          if (enabled)
          {
              mask |= 1u << cause;
@@ -161,7 +185,7 @@ index c5e31c4..d583aee 100644
          }
          else
          {
-@@ -1258,6 +1266,8 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
+@@ -1258,6 +1267,8 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
      const uint32_t mask = dmac ? m_enabledDmacMask : m_enabledIntcMask;
      if (cause < 32u && (mask & (1u << cause)) == 0u)
      {
@@ -170,7 +194,7 @@ index c5e31c4..d583aee 100644
          return;
      }
      const auto &handlers = dmac ? m_dmacHandlers : m_intcHandlers;
-@@ -1743,6 +1753,16 @@ void EeScheduler::applyPendingPreemption()
+@@ -1743,6 +1754,16 @@ void EeScheduler::applyPendingPreemption()
  void EeScheduler::processPendingEvents()
  {
      assertExecutor();
@@ -187,10 +211,11 @@ index c5e31c4..d583aee 100644
      processDueDeadlines();
      const uint32_t timerInterrupts = m_pendingEeTimerInterrupts;
      m_pendingEeTimerInterrupts = 0u;
-@@ -1869,6 +1889,17 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1869,6 +1890,18 @@ void EeScheduler::processEvent(const EeEvent &event)
      case EeEventType::VBlankStart:
          ++m_vsyncTick;
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
++        gsdump::onVSync(m_runtime.memory().gs(), m_vsyncTick);
 +        // PS2X_VSYNC_LOG=1: a cada 60 VSyncs imprime quantos VSyncs por segundo real (60 = velocidade de PS2).
 +        if (static const bool vsyncLog = std::getenv("PS2X_VSYNC_LOG") != nullptr; vsyncLog && m_vsyncTick % 60u == 0u)
 +        {
@@ -1033,10 +1058,274 @@ index f0ad507..70e72bf 100644
      result.sourceFbp = selected.fbp;
      return result;
 diff --git i/ps2xRuntime/src/lib/gs/gs_frontend.cpp w/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 5658928..ef0df5f 100644
+index 5658928..54ad3a5 100644
 --- i/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ w/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-@@ -668,70 +668,88 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+@@ -2,7 +2,11 @@
+ #include "runtime/gs/gs_cpu_backend.h"
+ #include "ps2_log.h"
+ #include "runtime/ps2_memory.h"
++#include "runtime/gs/gs_dump.h"
+ #include <atomic>
++#include <cstdlib>
++#include <mutex>
++#include <string>
+ #include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+@@ -10,6 +14,235 @@
+ #include <iostream>
+ #include <sstream>
+ 
++// ---- GS dump (formato do PCSX2, ver include/runtime/gs/gs_dump.h) ----
++namespace gsdump
++{
++    namespace
++    {
++        constexpr uint32_t kVramBytes = 4u * 1024u * 1024u;
++        constexpr uint32_t kStateHead = 425u; // GSState::Freeze v9 até m_tr.write
++        constexpr uint32_t kStateTail = 84u;  // 4 GIFPath (tag + reg) + m_q
++        constexpr uint32_t kPrivBytes = 0x2000u;
++
++        std::mutex s_mutex;
++        FILE *s_file = nullptr;
++        uint64_t s_startTick = 0, s_framesLeft = 0;
++        bool s_configured = false;
++        std::atomic<bool> s_done{false};
++        std::string s_path;
++        const uint8_t *s_vram = nullptr;
++        uint64_t s_raw[0x80]{}; // último valor escrito em cada registrador de desenho
++        std::atomic<uint64_t> s_seen{0}, s_written{0}; // pacotes que entraram no GS / gravados
++
++        void configureLocked()
++        {
++            s_configured = true;
++            const char *spec = std::getenv("PS2X_GSDUMP");
++            if (!spec)
++            {
++                s_done = true;
++                return;
++            }
++            char *end = nullptr;
++            s_startTick = std::strtoull(spec, &end, 0);
++            s_framesLeft = (end && *end == ':') ? std::strtoull(end + 1, &end, 0) : 2u;
++            s_path = (end && *end == ':') ? std::string(end + 1) : std::string("ps2x.gs");
++        }
++
++        void put(const void *p, size_t n) { std::fwrite(p, 1, n, s_file); }
++        void putU8(uint8_t v) { put(&v, 1); }
++        void putU32(uint32_t v) { put(&v, 4); }
++
++        void transferLocked(const uint8_t *data, uint32_t size)
++        {
++            if (!s_file || !data || size == 0u)
++                return;
++            s_written.fetch_add(1, std::memory_order_relaxed);
++            putU8(0);
++            putU8(3); // índice de path genérico do PCSX2 (GSgifTransfer)
++            putU32(size);
++            put(data, size);
++        }
++
++        void putPrivLocked(const GSRegisters &r)
++        {
++            uint8_t block[kPrivBytes]{};
++            const uint64_t vals[] = {r.pmode, r.smode1, r.smode2, r.srfsh, r.synch1, r.synch2, r.syncv, r.dispfb1,
++                                     r.display1, r.dispfb2, r.display2, r.extbuf, r.extdata, r.extwrite, r.bgcolor};
++            for (size_t i = 0; i < std::size(vals); ++i)
++                std::memcpy(block + i * 0x10u, &vals[i], 8);
++            const uint64_t csr = r.csr.load(std::memory_order_relaxed);
++            std::memcpy(block + 0x1000u, &csr, 8);
++            std::memcpy(block + 0x1010u, &r.imr, 8);
++            std::memcpy(block + 0x1040u, &r.busdir, 8);
++            std::memcpy(block + 0x1080u, &r.siglblid, 8);
++            put(block, sizeof(block));
++        }
++
++        void openLocked(const GSRegisters &priv)
++        {
++            s_file = std::fopen(s_path.c_str(), "wb");
++            if (!s_file)
++            {
++                std::fprintf(stderr, "[gsdump] não abriu %s\n", s_path.c_str());
++                s_done = true;
++                return;
++            }
++            static const char serial[] = "SCUS-97177";
++            const uint32_t serialSize = sizeof(serial) - 1u;
++            const uint32_t stateSize = kStateHead + kVramBytes + kStateTail;
++            const uint32_t header[9] = {9u, stateSize, 36u, serialSize, 0u, 0u, 0u, 36u + serialSize, 0u};
++            putU32(0xFFFFFFFFu);
++            putU32(sizeof(header) + serialSize);
++            put(header, sizeof(header));
++            put(serial, serialSize);
++
++            // estado: registradores na ordem de GSState::Freeze, VRAM, cauda zerada
++            uint8_t head[kStateHead]{};
++            uint32_t version = 9u;
++            std::memcpy(head, &version, 4);
++            uint8_t *p = head + 4;
++            const uint8_t env[] = {GS_REG_PRIM, GS_REG_PRMODECONT, GS_REG_TEXCLUT, GS_REG_SCANMSK, GS_REG_TEXA,
++                                   GS_REG_FOGCOL, GS_REG_DIMX, GS_REG_DTHE, GS_REG_COLCLAMP, GS_REG_PABE,
++                                   GS_REG_BITBLTBUF, GS_REG_TRXDIR, GS_REG_TRXPOS, GS_REG_TRXREG, GS_REG_TRXREG};
++            for (uint8_t reg : env)
++            {
++                std::memcpy(p, &s_raw[reg], 8);
++                p += 8;
++            }
++            for (int c = 0; c < 2; ++c)
++            {
++                const uint8_t ctx[] = {GS_REG_XYOFFSET_1, GS_REG_TEX0_1, GS_REG_TEX1_1, GS_REG_CLAMP_1,
++                                       GS_REG_MIPTBP1_1, GS_REG_MIPTBP2_1, GS_REG_SCISSOR_1, GS_REG_ALPHA_1,
++                                       GS_REG_TEST_1, GS_REG_FBA_1, GS_REG_FRAME_1, GS_REG_ZBUF_1};
++                for (uint8_t reg : ctx)
++                {
++                    std::memcpy(p, &s_raw[reg + c], 8);
++                    p += 8;
++                }
++            }
++            for (uint8_t reg : {GS_REG_RGBAQ, GS_REG_ST, GS_REG_UV, GS_REG_FOG})
++            {
++                std::memcpy(p, &s_raw[reg], 8);
++                p += 8;
++            }
++            put(head, sizeof(head));
++            if (s_vram)
++                put(s_vram, kVramBytes);
++            else
++            {
++                static const uint8_t zeros[4096]{};
++                for (uint32_t i = 0; i < kVramBytes; i += sizeof(zeros))
++                    put(zeros, sizeof(zeros));
++            }
++            const uint8_t tail[kStateTail]{};
++            put(tail, sizeof(tail));
++            putPrivLocked(priv);
++            std::fprintf(stderr, "[gsdump] gravando %s a partir do vsync %llu (pacotes no GS até agora: %llu)\n",
++                         s_path.c_str(), static_cast<unsigned long long>(s_startTick),
++                         static_cast<unsigned long long>(s_seen.load()));
++        }
++    }
++
++    void setVram(const uint8_t *vram)
++    {
++        std::lock_guard<std::mutex> lock(s_mutex);
++        s_vram = vram;
++    }
++
++    void shadowRegister(uint8_t reg, uint64_t value)
++    {
++        if (reg < 0x80u)
++            s_raw[reg] = value;
++    }
++
++    void transfer(const uint8_t *data, uint32_t size)
++    {
++        s_seen.fetch_add(1, std::memory_order_relaxed);
++        if (s_done)
++            return;
++        std::lock_guard<std::mutex> lock(s_mutex);
++        transferLocked(data, size);
++    }
++
++    // Escrita direta de registrador vira um pacote A+D de um registrador.
++    void registerWrite(uint8_t reg, uint64_t value)
++    {
++        if (s_done)
++            return;
++        std::lock_guard<std::mutex> lock(s_mutex);
++        if (!s_file)
++            return;
++        uint8_t pkt[32]{};
++        const uint64_t tagLo = 1ull | (1ull << 15) | (1ull << 60); // NLOOP=1 EOP=1 PACKED NREG=1
++        const uint64_t tagHi = 0xEull;                             // A+D
++        const uint64_t addr = reg;
++        std::memcpy(pkt, &tagLo, 8);
++        std::memcpy(pkt + 8, &tagHi, 8);
++        std::memcpy(pkt + 16, &value, 8);
++        std::memcpy(pkt + 24, &addr, 8);
++        transferLocked(pkt, sizeof(pkt));
++    }
++
++    // Upload nativo vira A+D (BITBLTBUF, TRXPOS, TRXREG, TRXDIR) seguido de um pacote IMAGE.
++    void imageUpload(uint64_t bitbltbuf, uint64_t trxpos, uint64_t trxreg, uint64_t trxdir, const uint8_t *data,
++                     uint32_t size)
++    {
++        if (s_done)
++            return;
++        std::lock_guard<std::mutex> lock(s_mutex);
++        if (!s_file)
++            return;
++        uint8_t ad[16 + 4 * 16]{};
++        const uint64_t tagLo = 4ull | (1ull << 60);
++        const uint64_t tagHi = 0xEull;
++        std::memcpy(ad, &tagLo, 8);
++        std::memcpy(ad + 8, &tagHi, 8);
++        const uint64_t regs[4][2] = {{bitbltbuf, GS_REG_BITBLTBUF}, {trxpos, GS_REG_TRXPOS},
++                                     {trxreg, GS_REG_TRXREG}, {trxdir, GS_REG_TRXDIR}};
++        for (int i = 0; i < 4; ++i)
++        {
++            std::memcpy(ad + 16 + i * 16, &regs[i][0], 8);
++            std::memcpy(ad + 24 + i * 16, &regs[i][1], 8);
++        }
++        transferLocked(ad, sizeof(ad));
++        const uint32_t qwc = size / 16u;
++        std::vector<uint8_t> img(16u + qwc * 16u);
++        const uint64_t imgLo = static_cast<uint64_t>(qwc & 0x7FFFu) | (1ull << 15) | (2ull << 58); // IMAGE
++        std::memcpy(img.data(), &imgLo, 8);
++        std::memcpy(img.data() + 16, data, qwc * 16u);
++        transferLocked(img.data(), static_cast<uint32_t>(img.size()));
++    }
++
++    void onVSync(const GSRegisters &priv, uint64_t tick)
++    {
++        std::lock_guard<std::mutex> lock(s_mutex);
++        if (!s_configured)
++            configureLocked();
++        if (s_done)
++            return;
++        if (!s_file)
++        {
++            if (tick >= s_startTick)
++                openLocked(priv);
++            return;
++        }
++        putU8(3);
++        putPrivLocked(priv);
++        putU8(1);
++        putU8(static_cast<uint8_t>(tick & 1u));
++        if (--s_framesLeft == 0u)
++        {
++            std::fclose(s_file);
++            s_file = nullptr;
++            s_done = true;
++            std::fprintf(stderr, "[gsdump] fechado %s (pacotes no GS desde o boot: %llu, gravados: %llu)\n",
++                         s_path.c_str(), static_cast<unsigned long long>(s_seen.load()),
++                         static_cast<unsigned long long>(s_written.load()));
++        }
++    }
++}
++
+ namespace
+ {
+     static constexpr uint32_t kHostFrameWidth = 640u;
+@@ -115,6 +348,7 @@ void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
+ {
+     m_localMemoryStorage = vram;
+     m_localMemorySize = vramSize;
++    gsdump::setVram(vram);
+     m_privRegs = privRegs;
+     if (!m_backend)
+         m_backend = std::make_unique<GSCpuBackend>();
+@@ -641,6 +875,7 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
+ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+ {
+     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
++    gsdump::transfer(data, sizeBytes);
+     if (!data || sizeBytes < 16 || !m_backend)
+         return;
+ 
+@@ -668,70 +903,88 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
          }
      });
  
@@ -1170,6 +1459,36 @@ index 5658928..ef0df5f 100644
          }
      }
  }
+@@ -739,6 +992,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+ bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+ {
+     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
++    gsdump::transfer(data, sizeBytes);
+     if (!data || sizeBytes < 16u || !m_backend)
+         return false;
+ 
+@@ -784,6 +1038,7 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
+                            uint32_t sizeBytes)
+ {
+     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
++    gsdump::imageUpload(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
+     uploadImageNativeUnlocked(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
+ }
+ 
+@@ -1062,11 +1317,13 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
+ void GS::writeRegister(uint8_t regAddr, uint64_t value)
+ {
+     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
++    gsdump::registerWrite(regAddr, value);
+     writeRegisterUnlocked(regAddr, value);
+ }
+ 
+ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
+ {
++    gsdump::shadowRegister(regAddr, value);
+     const bool interestingReg =
+         regAddr == GS_REG_PRIM ||
+         regAddr == GS_REG_RGBAQ ||
 diff --git i/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp w/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
 index a8f9fa8..47ccc1c 100644
 --- i/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
