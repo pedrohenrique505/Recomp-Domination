@@ -1,3 +1,34 @@
+diff --git i/ps2xIOP/src/emulator/iop_emulator.cpp w/ps2xIOP/src/emulator/iop_emulator.cpp
+index e5f63a9..36a7573 100644
+--- i/ps2xIOP/src/emulator/iop_emulator.cpp
++++ w/ps2xIOP/src/emulator/iop_emulator.cpp
+@@ -1,3 +1,5 @@
++#include <cstdio>
++#include <cstdlib>
+ #include "iop_emulator.h"
+ #include "imports/iop_cdvd.h"
+ #include "core/iop_cpu.h"
+@@ -380,7 +382,20 @@ namespace ps2x::iop::detail
+ 
+             if (const auto import = imports.decode(cpu.pc))
+             {
++                const uint32_t traceA0 = cpu.gpr[4], traceA1 = cpu.gpr[5], traceA2 = cpu.gpr[6], traceRa = cpu.gpr[31];
+                 const ImportDisposition disposition = dispatchImport(*import, cpu);
++                // PS2X_IOP_TRACE=N: imprime as N primeiras chamadas de import dos módulos IOP (biblioteca:ordinal,
++                // argumentos, retorno e se foi tratada) para ver onde um módulo como o 989snd para.
++                static const long traceLimit = std::getenv("PS2X_IOP_TRACE") ? std::atol(std::getenv("PS2X_IOP_TRACE")) : 0;
++                static long tracePrinted = 0;
++                if (tracePrinted < traceLimit)
++                {
++                    ++tracePrinted;
++                    std::fprintf(stderr, "[iop-import] %s:%u a0=%x a1=%x a2=%x v0=%x ra=%x %s\n", import->library.c_str(),
++                                 import->ordinal, traceA0, traceA1, traceA2, cpu.gpr[2], traceRa,
++                                 disposition == ImportDisposition::Missing ? "MISSING"
++                                 : disposition == ImportDisposition::JumpToGuest ? "guest" : "ok");
++                }
+                 ++totalInstructions;
+                 ++totalCycles;
+                 if (disposition == ImportDisposition::JumpToGuest)
 diff --git i/ps2xRecomp/src/lib/control_flow_emitter.cpp w/ps2xRecomp/src/lib/control_flow_emitter.cpp
 index 4bf8dc5..35d9e74 100644
 --- i/ps2xRecomp/src/lib/control_flow_emitter.cpp
@@ -1910,7 +1941,7 @@ index 45cb9d2..9450fc6 100644
              tick++;
              if ((tick % 120) == 0)
 diff --git i/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp w/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
-index bd75bba..dc095a4 100644
+index bd75bba..7f0d8e9 100644
 --- i/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 +++ w/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 @@ -1,3 +1,4 @@
@@ -2049,11 +2080,11 @@ index bd75bba..dc095a4 100644
      {
 -        if (!store.valid || store.readyCycle > m_cycle)
 +        if (!store.valid)
-+            continue;
+             continue;
 +        if (store.readyCycle > m_cycle)
 +        {
 +            pending(store.readyCycle);
-             continue;
++            continue;
 +        }
          if (m_activeVuData && store.address + 16u <= m_activeVuDataSize)
          {
@@ -2094,11 +2125,11 @@ index bd75bba..dc095a4 100644
      {
 -        if (!write.valid || write.readyCycle > m_cycle)
 +        if (!write.valid)
-             continue;
++            continue;
 +        if (write.readyCycle > m_cycle)
 +        {
 +            pending(write.readyCycle);
-+            continue;
+             continue;
 +        }
          for (uint32_t component = 0; component < 4u; ++component)
          {
@@ -2111,3 +2142,28 @@ index bd75bba..dc095a4 100644
  }
  
  void VU1Interpreter::progressXgkick()
+@@ -1832,6 +1879,24 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+         m_pendingHaltD = false;
+         m_pendingHaltT = false;
+     }
++    // PS2X_PROF: conta execuções que saíram por orçamento de ciclos em vez de E-bit/halt.
++    if (static const bool prof = std::getenv("PS2X_PROF") != nullptr; prof)
++    {
++        static uint64_t ended = 0, budget = 0, other = 0;
++        if (programEnded)
++            ++ended;
++        else if (m_cycle >= budgetEnd)
++        {
++            if (++budget <= 5)
++                std::fprintf(stderr, "[vu1] orçamento de %u ciclos estourou em pc=0x%x\n", maxCycles, m_state.pc);
++        }
++        else
++            ++other;
++        if ((ended + budget + other) % 20000u == 0u)
++            std::fprintf(stderr, "[vu1] execuções: fim normal=%llu estouro=%llu outro=%llu\n",
++                         static_cast<unsigned long long>(ended), static_cast<unsigned long long>(budget),
++                         static_cast<unsigned long long>(other));
++    }
+     m_state.cycles = m_cycle;
+     if (useVuRounding && previousRoundingMode != -1)
+         std::fesetround(previousRoundingMode);

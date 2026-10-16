@@ -20,3 +20,4 @@ ps2_log.txt
 perf*.data
 perf*.data.old
 /tools/gsplay/gsplay
+/tools/__pycache__/
