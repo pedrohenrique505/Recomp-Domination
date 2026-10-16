@@ -29,6 +29,68 @@ index e5f63a9..36a7573 100644
                  ++totalInstructions;
                  ++totalCycles;
                  if (disposition == ImportDisposition::JumpToGuest)
+diff --git i/ps2xIOP/src/iop_module_manager.cpp w/ps2xIOP/src/iop_module_manager.cpp
+index 56e4a8f..a57fa59 100644
+--- i/ps2xIOP/src/iop_module_manager.cpp
++++ w/ps2xIOP/src/iop_module_manager.cpp
+@@ -60,6 +60,7 @@ namespace ps2x::iop::detail
+         m_records.clear();
+         m_hleIdsByKey.clear();
+         m_loadedKeyReferences.clear();
++        ++m_loadedGeneration;
+         m_nextHleId = 0x40000000;
+     }
+ 
+@@ -149,11 +150,16 @@ namespace ps2x::iop::detail
+     {
+         if (aliases.empty())
+             return true;
+-        return std::any_of(aliases.begin(), aliases.end(), [&](std::string_view alias)
+-                           {
+-                               const std::string key = ps2PathLeafKey(alias);
+-                               const auto found = m_loadedKeyReferences.find(key);
+-                               return found != m_loadedKeyReferences.end() && found->second != 0u; });
++        auto &cached = m_isLoadedCache[aliases.data()];
++        if (cached.first == m_loadedGeneration)
++            return cached.second;
++        cached.first = m_loadedGeneration;
++        cached.second = std::any_of(aliases.begin(), aliases.end(), [&](std::string_view alias)
++                                    {
++                                        const std::string key = ps2PathLeafKey(alias);
++                                        const auto found = m_loadedKeyReferences.find(key);
++                                        return found != m_loadedKeyReferences.end() && found->second != 0u; });
++        return cached.second;
+     }
+ 
+     bool IopModuleManager::recognizes(std::string_view path) const
+@@ -165,10 +171,12 @@ namespace ps2x::iop::detail
+     void IopModuleManager::addLoadedKey(std::string_view key)
+     {
+         ++m_loadedKeyReferences[std::string(key)];
++        ++m_loadedGeneration;
+     }
+ 
+     void IopModuleManager::removeLoadedKey(std::string_view key)
+     {
++        ++m_loadedGeneration;
+         const auto found = m_loadedKeyReferences.find(std::string(key));
+         if (found == m_loadedKeyReferences.end())
+             return;
+diff --git i/ps2xIOP/src/iop_module_manager.h w/ps2xIOP/src/iop_module_manager.h
+index 33ab9f6..1a8c865 100644
+--- i/ps2xIOP/src/iop_module_manager.h
++++ w/ps2xIOP/src/iop_module_manager.h
+@@ -44,6 +44,10 @@ namespace ps2x::iop::detail
+         std::unordered_map<int32_t, Record> m_records;
+         std::unordered_map<std::string, int32_t> m_hleIdsByKey;
+         std::unordered_map<std::string, uint32_t> m_loadedKeyReferences;
++        // isLoaded roda em todo RPC (selectRpcAbi); guarda o resultado por lista de aliases até o conjunto de
++        // módulos carregados mudar, em vez de normalizar caminhos a cada chamada.
++        uint64_t m_loadedGeneration = 1;
++        mutable std::unordered_map<const void *, std::pair<uint64_t, bool>> m_isLoadedCache;
+         int32_t m_nextHleId = 0x40000000;
+     };
+ }
 diff --git i/ps2xRecomp/src/lib/control_flow_emitter.cpp w/ps2xRecomp/src/lib/control_flow_emitter.cpp
 index 4bf8dc5..35d9e74 100644
 --- i/ps2xRecomp/src/lib/control_flow_emitter.cpp
