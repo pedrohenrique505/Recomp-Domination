@@ -1021,7 +1021,7 @@ index 2c98016..e491663 100644
      }
  }
 diff --git i/ps2xRuntime/src/lib/Kernel/Syscalls/RPC.cpp w/ps2xRuntime/src/lib/Kernel/Syscalls/RPC.cpp
-index 07fcd29..726b589 100644
+index 07fcd29..eb68b82 100644
 --- i/ps2xRuntime/src/lib/Kernel/Syscalls/RPC.cpp
 +++ w/ps2xRuntime/src/lib/Kernel/Syscalls/RPC.cpp
 @@ -139,6 +139,19 @@ namespace ps2_syscalls
@@ -1044,7 +1044,19 @@ index 07fcd29..726b589 100644
          bool signalRpcCompletionSema(PS2Runtime *runtime, uint32_t semaId)
          {
              if (!runtime || semaId == 0u || semaId > 0xFFFFu)
-@@ -545,6 +558,24 @@ namespace ps2_syscalls
+@@ -342,6 +355,11 @@ namespace ps2_syscalls
+     void SifCallRpc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+         std::lock_guard<std::recursive_mutex> rpcCallLock(g_sif_call_rpc_mutex);
++        // Um RPC real custa milhares de ciclos (pacote SIF, DMA, resposta do IOP). Sem cobrar, loops que
++        // reenviam comandos enquanto esperam outro cliente (989snd) giram sem o relógio emulado andar, e o
++        // IOP, que avança pelos ciclos do EE, nunca termina o que eles esperam.
++        constexpr uint32_t kSifCallRpcCycles = 4096u;
++        runtime->eeScheduler().accountCycles(kSifCallRpcCycles);
+ 
+         const uint32_t clientPtr = getRegU32(ctx, 4);
+         const uint32_t rpcNum = getRegU32(ctx, 5);
+@@ -545,6 +563,24 @@ namespace ps2_syscalls
  
              iopResult = PS2IopTransport::handleRpc(runtime, rdram, ctx, request);
  
@@ -1069,7 +1081,7 @@ index 07fcd29..726b589 100644
              if (iopResult.signalNowaitCompletion &&
                  (mode & kSifRpcModeNowait) != 0u)
              {
-@@ -702,6 +733,42 @@ namespace ps2_syscalls
+@@ -702,6 +738,42 @@ namespace ps2_syscalls
          finishCall(nullptr, *ctx);
      }
  
