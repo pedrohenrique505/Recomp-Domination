@@ -263,6 +263,97 @@ index 56a978e..b3fc5a3 100644
          }
  
          setReturnS32(ctx, 0);
+diff --git i/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h w/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
+index b1bb6d8..27cc4ae 100644
+--- i/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
++++ w/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
+@@ -322,6 +322,67 @@ namespace
+         }
+     }
+ 
++    // Setor real de um arquivo na ISO configurada (PS2X_CD_IMAGE), lendo os diretórios ISO 9660.
++    // O IOP emulado lê a imagem pelo setor real; se o EE devolver um setor inventado no sceCdSearchFile,
++    // módulos IOP que recebem esse setor do jogo (ex. 989snd carregando bancos) leem o lugar errado.
++    bool findIsoFileLbn(const std::string &ps2Path, uint32_t &lbnOut)
++    {
++        static std::filesystem::path indexedImage;
++        static std::unordered_map<std::string, uint32_t> lbnByPath; // caminho em minúsculas, sem ";1"
++        const std::filesystem::path image = getCdImagePath();
++        if (image.empty())
++            return false;
++        if (indexedImage != image)
++        {
++            indexedImage = image;
++            lbnByPath.clear();
++            std::ifstream iso(image, std::ios::binary);
++            auto readSector = [&](uint32_t lbn, std::vector<uint8_t> &out, uint32_t count) -> bool
++            {
++                out.assign(static_cast<size_t>(count) * kCdSectorSize, 0u);
++                iso.seekg(static_cast<std::streamoff>(lbn) * kCdSectorSize);
++                return static_cast<bool>(iso.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(out.size())));
++            };
++            auto u32 = [](const uint8_t *p) { return static_cast<uint32_t>(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24)); };
++            std::vector<uint8_t> pvd;
++            if (!iso.is_open() || !readSector(16u, pvd, 1u) || std::memcmp(pvd.data() + 1, "CD001", 5) != 0)
++                return false;
++            std::vector<std::pair<std::string, std::pair<uint32_t, uint32_t>>> dirs{{"", {u32(pvd.data() + 156 + 2), u32(pvd.data() + 156 + 10)}}};
++            for (size_t d = 0; d < dirs.size() && d < 4096u; ++d)
++            {
++                const auto [prefix, extent] = dirs[d];
++                std::vector<uint8_t> data;
++                if (!readSector(extent.first, data, (extent.second + kCdSectorSize - 1u) / kCdSectorSize))
++                    continue;
++                for (size_t i = 0; i < data.size();)
++                {
++                    const uint8_t len = data[i];
++                    if (len == 0u)
++                    {
++                        i = (i / kCdSectorSize + 1u) * kCdSectorSize;
++                        continue;
++                    }
++                    const uint8_t nameLen = data[i + 32];
++                    const std::string name(reinterpret_cast<const char *>(&data[i + 33]), nameLen);
++                    if (!(nameLen == 1u && (name[0] == '\0' || name[0] == '\1')))
++                    {
++                        const std::string path = prefix + toLowerAscii(stripIsoVersionSuffix(name));
++                        if ((data[i + 25] & 2u) != 0u)
++                            dirs.push_back({path + "/", {u32(&data[i + 2]), u32(&data[i + 10])}});
++                        else
++                            lbnByPath[path] = u32(&data[i + 2]);
++                    }
++                    i += len;
++                }
++            }
++        }
++        const auto it = lbnByPath.find(toLowerAscii(stripIsoVersionSuffix(normalizeCdPathNoPrefix(ps2Path))));
++        if (it == lbnByPath.end())
++            return false;
++        lbnOut = it->second;
++        return true;
++    }
++
+     bool registerCdFile(const std::string &ps2Path, CdFileEntry &entryOut)
+     {
+         const std::string key = cdPathKey(ps2Path);
+@@ -389,10 +450,15 @@ namespace
+         CdFileEntry entry;
+         entry.hostPath = path;
+         entry.sizeBytes = static_cast<uint32_t>(std::min<uint64_t>(sizeBytes, 0xFFFFFFFFu));
+-        entry.baseLbn = g_nextPseudoLbn;
+         entry.sectors = sectorsForBytes(sizeBytes);
+-
+-        g_nextPseudoLbn += entry.sectors + 1;
++        uint32_t isoLbn = 0;
++        if (findIsoFileLbn(ps2Path, isoLbn))
++            entry.baseLbn = isoLbn; // mesmo setor que o IOP lê na imagem
++        else
++        {
++            entry.baseLbn = g_nextPseudoLbn;
++            g_nextPseudoLbn += entry.sectors + 1;
++        }
+         g_cdFilesByKey.emplace(key, entry);
+         entryOut = entry;
+         g_lastCdError = 0;
 diff --git i/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp w/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
 index b50a4cf..502f88a 100644
 --- i/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
