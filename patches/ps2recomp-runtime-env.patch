@@ -103,7 +103,7 @@ index 67c8184..bcda1c1 100644
      float normalizeOperand(float value) const;
      float normalizeResult(float value, uint32_t &laneFlags) const;
 diff --git i/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp w/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..5b84b37 100644
+index c5e31c4..d583aee 100644
 --- i/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ w/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -106,6 +106,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
@@ -187,6 +187,24 @@ index c5e31c4..5b84b37 100644
      processDueDeadlines();
      const uint32_t timerInterrupts = m_pendingEeTimerInterrupts;
      m_pendingEeTimerInterrupts = 0u;
+@@ -1869,6 +1889,17 @@ void EeScheduler::processEvent(const EeEvent &event)
+     case EeEventType::VBlankStart:
+         ++m_vsyncTick;
+         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
++        // PS2X_VSYNC_LOG=1: a cada 60 VSyncs imprime quantos VSyncs por segundo real (60 = velocidade de PS2).
++        if (static const bool vsyncLog = std::getenv("PS2X_VSYNC_LOG") != nullptr; vsyncLog && m_vsyncTick % 60u == 0u)
++        {
++            static auto last = std::chrono::steady_clock::now();
++            const auto now = std::chrono::steady_clock::now();
++            std::fprintf(stderr, "[vsync] tick=%llu %.1f vsync/s eeCycle=%llu\n",
++                         static_cast<unsigned long long>(m_vsyncTick),
++                         60.0 / std::chrono::duration<double>(now - last).count(),
++                         static_cast<unsigned long long>(m_eeCycle));
++            last = now;
++        }
+         if ((m_vsyncTick & 1u) != 0u)
+         {
+             m_runtime.memory().gs().csr.fetch_or(0x2000ull, std::memory_order_acq_rel);
 diff --git i/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp w/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 index 56a978e..b3fc5a3 100644
 --- i/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
@@ -1298,7 +1316,7 @@ index 37b6a4d..74b27c5 100644
      uint32_t interruptMask = 0u;
      for (size_t index = 0; index < m_eeTimers.size(); ++index)
 diff --git i/ps2xRuntime/src/lib/ps2_runtime.cpp w/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..04652d6 100644
+index 45cb9d2..9450fc6 100644
 --- i/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ w/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,4 +1,7 @@
@@ -1410,7 +1428,7 @@ index 45cb9d2..04652d6 100644
      setIoPaths(paths);
  }
  
-@@ -1353,6 +1414,27 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1353,6 +1414,30 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
      ctx->pc = targetPc;
      const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
  
@@ -1429,16 +1447,19 @@ index 45cb9d2..04652d6 100644
 +    }();
 +    if (isCall && !tracedCalls.empty() && tracedCalls.count(targetPc) != 0)
 +    {
++        // PS2X_TRACE_LIMIT: quantas chamadas imprimir (padrão 400); vs = VSync em que a chamada aconteceu.
++        static const int traceLimit = std::getenv("PS2X_TRACE_LIMIT") ? std::atoi(std::getenv("PS2X_TRACE_LIMIT")) : 400;
 +        static std::atomic<int> tracedPrinted{0};
-+        if (tracedPrinted.fetch_add(1) < 400)
-+            std::fprintf(stderr, "[call] %x a0=%x a1=%x a2=%x a3=%x s0=%x ra=%x\n", targetPc, GPR_U32(ctx, 4), GPR_U32(ctx, 5),
-+                         GPR_U32(ctx, 6), GPR_U32(ctx, 7), GPR_U32(ctx, 16), sourcePc);
++        if (tracedPrinted.fetch_add(1) < traceLimit)
++            std::fprintf(stderr, "[call] %x a0=%x a1=%x a2=%x a3=%x s0=%x ra=%x vs=%llu\n", targetPc, GPR_U32(ctx, 4), GPR_U32(ctx, 5),
++                         GPR_U32(ctx, 6), GPR_U32(ctx, 7), GPR_U32(ctx, 16), sourcePc,
++                         static_cast<unsigned long long>(eeScheduler().currentVSyncTick()));
 +    }
 +
      // Every inter-function transfer is also a deterministic EE safe point.
      // Backward edges inside generated functions use eeCheckpointDue(), while
      // this charge bounds straight-line call chains that have no local loop.
-@@ -2386,8 +2468,25 @@ void PS2Runtime::run()
+@@ -2386,8 +2471,25 @@ void PS2Runtime::run()
          gameThreadFinished.store(true, std::memory_order_release); });
  
      uint64_t tick = 0;
