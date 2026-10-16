@@ -817,7 +817,7 @@ index 1e38bd4..7d51085 100644
          std::vector<Descriptor> descriptors;
          {
 diff --git i/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp w/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..bb97472 100644
+index f0ad507..70e72bf 100644
 --- i/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ w/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -1,3 +1,4 @@
@@ -849,7 +849,25 @@ index f0ad507..bb97472 100644
      }
  }
  
-@@ -533,6 +538,7 @@ void GSCpuBackend::Reset()
+@@ -410,6 +415,17 @@ namespace
+         }
+     }
+ 
++    // INT=1 FFMD=1: cada field mostra linhas seguidas de um buffer com metade da altura; dobra as linhas.
++    void lineDoublePresentation(std::vector<uint8_t> &pixels, uint32_t width, uint32_t &height)
++    {
++        const uint32_t outHeight = std::min<uint32_t>(height * 2u, kHostFrameHeight);
++        for (uint32_t y = outHeight; y-- > 0u;)
++            std::memmove(pixels.data() + y * kHostFrameWidth * 4u,
++                         pixels.data() + (y >> 1u) * kHostFrameWidth * 4u,
++                         width * 4u);
++        height = outHeight;
++    }
++
+     void normalizePresentationAlpha(std::vector<uint8_t> &pixels, uint32_t width, uint32_t height)
+     {
+         for (uint32_t y = 0; y < height; ++y)
+@@ -533,6 +549,7 @@ void GSCpuBackend::Reset()
  void GSCpuBackend::ResetUnlocked()
  {
      m_clut.fill(0u);
@@ -857,7 +875,7 @@ index f0ad507..bb97472 100644
      m_clutCbp.fill(0u);
      m_texturePageCache.Invalidate();
      m_transfer = {};
-@@ -543,8 +549,17 @@ void GSCpuBackend::ResetUnlocked()
+@@ -543,8 +560,17 @@ void GSCpuBackend::ResetUnlocked()
      m_localToHostReadPos = 0u;
  }
  
@@ -875,7 +893,7 @@ index f0ad507..bb97472 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || batch.vertexCount == 0u)
          return;
-@@ -623,6 +638,7 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
+@@ -623,6 +649,7 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
          }
  
          const uint32_t raw = ReadTextureVramUnlocked(tex0.cpsm, tex0.cbp, sourceWidth, sourceX, sourceY); 
@@ -883,7 +901,7 @@ index f0ad507..bb97472 100644
          const uint32_t destination = (loadCsm1Suffix ? entry : destinationBase + entry) & (sixteenBit ? 0x1FFu : 0x0FFu);
          if (sixteenBit)
          {
-@@ -1012,7 +1028,27 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
+@@ -1012,7 +1039,27 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
      }
  }
  
@@ -912,7 +930,7 @@ index f0ad507..bb97472 100644
                                    uint8_t index,
                                    uint8_t cpsm,
                                    uint8_t csm,
-@@ -1269,6 +1305,35 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1269,6 +1316,35 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
      }
      else
      {
@@ -948,6 +966,37 @@ index f0ad507..bb97472 100644
          for (int y = drawY0; y <= drawY1; ++y)
              for (int x = drawX0; x <= drawX1; ++x)
                  WritePixel(state, x, y, z1, r, g, b, a, v1.fog);
+@@ -1871,6 +1947,12 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+     uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
+     decodeDisplaySize(request.display1, width1, height1);
+     decodeDisplaySize(request.display2, width2, height2);
++    const bool halfHeightFields = smode2.interlaced && smode2.frameMode;
++    if (halfHeightFields)
++    {
++        height1 = std::max(1u, height1 / 2u);
++        height2 = std::max(1u, height2 / 2u);
++    }
+     const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
+     const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
+     if (!valid1 && !valid2)
+@@ -1958,6 +2040,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+             normalizePresentationAlpha(result.pixels, result.width, result.height);
+             if (fieldMode)
+                 applyFieldPresentation(result.pixels, result.width, result.height, oddField);
++            if (halfHeightFields)
++                lineDoublePresentation(result.pixels, result.width, result.height);
+             result.displayFbp = displayFrame1.fbp;
+             result.sourceFbp = selected1.fbp;
+             return result;
+@@ -1974,6 +2058,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+     if (fieldMode)
+         applyFieldPresentation(result.pixels, result.width, result.height, oddField);
+     normalizePresentationAlpha(result.pixels, result.width, result.height);
++    if (halfHeightFields)
++        lineDoublePresentation(result.pixels, result.width, result.height);
+     result.displayFbp = displayFrame.fbp;
+     result.sourceFbp = selected.fbp;
+     return result;
 diff --git i/ps2xRuntime/src/lib/gs/gs_frontend.cpp w/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 index 5658928..ef0df5f 100644
 --- i/ps2xRuntime/src/lib/gs/gs_frontend.cpp
@@ -974,22 +1023,21 @@ index 5658928..ef0df5f 100644
 -        uint32_t nreg = static_cast<uint32_t>((tagLo >> 60) & 0xF);
 -        if (nreg == 0)
 -            nreg = 16;
--
--        recordGifTagDebugEventUnlocked(sizeBytes, nloop, flg, nreg);
--
--        bool pre = ((tagLo >> 46) & 1) != 0;
--        if (pre)
 +        if (!st.active)
-         {
--            writeRegisterUnlocked(GS_REG_PRIM, (tagLo >> 47) & 0x7FF);
++        {
 +            if (offset + 16 > sizeBytes)
 +                return;
 +            const uint64_t tagLo = loadLE64(data + offset);
 +            const uint64_t tagHi = loadLE64(data + offset + 8);
 +            offset += 16;
-+
+ 
+-        recordGifTagDebugEventUnlocked(sizeBytes, nloop, flg, nreg);
 +            m_curQ = 1.0f;
-+
+ 
+-        bool pre = ((tagLo >> 46) & 1) != 0;
+-        if (pre)
+-        {
+-            writeRegisterUnlocked(GS_REG_PRIM, (tagLo >> 47) & 0x7FF);
 +            const uint32_t nloop = static_cast<uint32_t>(tagLo & 0x7FFF);
 +            const uint8_t flg = static_cast<uint8_t>((tagLo >> 58) & 0x3);
 +            uint32_t nreg = static_cast<uint32_t>((tagLo >> 60) & 0xF);
@@ -1054,37 +1102,35 @@ index 5658928..ef0df5f 100644
 +            while (st.loopsLeft && offset + 8 <= sizeBytes)
              {
 -                for (uint32_t r = 0; r < nreg; ++r)
--                {
++                writeRegisterUnlocked(st.regs[st.regIdx], loadLE64(data + offset));
++                offset += 8;
++                if (++st.regIdx == st.nreg)
+                 {
 -                    if (offset + 8 > sizeBytes)
 -                        return;
 -                    writeRegisterUnlocked(regs[r], loadLE64(data + offset));
 -                    offset += 8;
--                }
--            }
--            if ((nloop * nreg) & 1)
-+                writeRegisterUnlocked(st.regs[st.regIdx], loadLE64(data + offset));
-                 offset += 8;
-+                if (++st.regIdx == st.nreg)
-+                {
 +                    st.regIdx = 0;
 +                    --st.loopsLeft;
-+                }
-+            }
+                 }
+             }
+-            if ((nloop * nreg) & 1)
+-                offset += 8;
          }
 -        else if (flg == GIF_FMT_IMAGE)
 +
 +        if (st.loopsLeft == 0)
++        {
++            offset += std::min(st.padBytes, sizeBytes - offset);
++            st.active = false;
++        }
++        else
          {
 -            uint32_t imageBytes = nloop * 16;
 -            if (offset + imageBytes > sizeBytes)
 -                imageBytes = sizeBytes - offset;
 -            processImageData(data + offset, imageBytes);
 -            offset += imageBytes;
-+            offset += std::min(st.padBytes, sizeBytes - offset);
-+            st.active = false;
-+        }
-+        else
-+        {
 +            return; // pacote acabou no meio da tag
          }
      }
@@ -1493,11 +1539,11 @@ index bd75bba..dc095a4 100644
      {
 -        if (!store.valid || store.readyCycle > m_cycle)
 +        if (!store.valid)
-             continue;
++            continue;
 +        if (store.readyCycle > m_cycle)
 +        {
 +            pending(store.readyCycle);
-+            continue;
+             continue;
 +        }
          if (m_activeVuData && store.address + 16u <= m_activeVuDataSize)
          {
@@ -1523,11 +1569,11 @@ index bd75bba..dc095a4 100644
      {
 -        if (!write.valid || write.readyCycle > m_cycle)
 +        if (!write.valid)
-             continue;
++            continue;
 +        if (write.readyCycle > m_cycle)
 +        {
 +            pending(write.readyCycle);
-+            continue;
+             continue;
 +        }
          if (m_viLatestWrite[write.reg] == write.sequence)
              m_state.vi[write.reg] = static_cast<int16_t>(write.value);
