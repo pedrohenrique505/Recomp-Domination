@@ -15,3 +15,8 @@
 build-*.time
 imgui.ini
 ps2_log.txt
+
+# Perfis do perf e binário do gsplay.
+perf*.data
+perf*.data.old
+/tools/gsplay/gsplay
